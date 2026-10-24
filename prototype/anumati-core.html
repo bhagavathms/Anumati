@@ -1,0 +1,909 @@
+<title>Anumati Core</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: { brand: '#0A3C82', brandhi: '#4C8DFF', ink: '#060B16', panel: '#0E182B', line: '#1C2A45' },
+        fontFamily: {
+          sans: ['"IBM Plex Sans"', 'system-ui', 'Segoe UI', 'sans-serif'],
+          cond: ['"IBM Plex Sans Condensed"', '"IBM Plex Sans"', 'system-ui', 'sans-serif'],
+          mono: ['"IBM Plex Mono"', 'ui-monospace', 'Consolas', 'monospace']
+        }
+      }
+    }
+  };
+</script>
+<style>
+  /* Layout: three-pane security console - agent sim | live gate | audit ledger. Single committed dark look. */
+  :root {
+    --bg: #0A1120;
+    --panel: #0E182B;
+    --ink: #060B16;
+    --line: #1C2A45;
+    --fg: #E2E8F0;
+    --muted: #8A9AB5;
+    --brand: #0A3C82;
+    --brand-hi: #4C8DFF;
+    --t1: #34D399;
+    --t2: #FBBF24;
+    --t3: #FB7185;
+    --esc: #FB923C;
+    color-scheme: dark;
+  }
+  html, body, #root { height: 100%; }
+  body { background: var(--bg); color: var(--fg); font-family: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif; }
+  .shell { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .grid-bg {
+    background-image: linear-gradient(rgba(76,141,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(76,141,255,0.05) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  .label { font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
+  .tabnum { font-variant-numeric: tabular-nums; }
+  .glow-g { box-shadow: 0 0 10px rgba(52,211,153,0.75); }
+  .glow-a { box-shadow: 0 0 10px rgba(251,191,36,0.75); }
+  .glow-r { box-shadow: 0 0 12px rgba(251,113,133,0.85); }
+  .glow-b { box-shadow: 0 0 14px rgba(76,141,255,0.55); }
+  .term::-webkit-scrollbar, .pane::-webkit-scrollbar { width: 8px; height: 8px; }
+  .term::-webkit-scrollbar-thumb, .pane::-webkit-scrollbar-thumb { background: #1C2A45; border-radius: 8px; }
+  @keyframes fadeUp { from { opacity: .35; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .line-in { animation: fadeUp .25s ease-out; }
+  @keyframes pulseRing { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.55); } 100% { box-shadow: 0 0 0 26px rgba(52,211,153,0); } }
+  .scan { animation: pulseRing 1.1s ease-out infinite; }
+  @keyframes sweep { 0% { top: 8%; } 50% { top: 84%; } 100% { top: 8%; } }
+  .sweep { animation: sweep 1.3s ease-in-out infinite; }
+  @keyframes undo { 0% { transform: rotate(0); } 100% { transform: rotate(-360deg); } }
+  .undo-spin { animation: undo .9s linear infinite; }
+  @keyframes rowFlash { 0% { background: rgba(167,139,250,.28); } 100% { background: transparent; } }
+  .row-flash { animation: rowFlash 1.2s ease-out; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .caret { animation: blink 1s step-end infinite; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--brand-hi); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    .line-in, .scan, .sweep, .undo-spin, .row-flash, .caret { animation: none !important; }
+  }
+</style>
+
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script>window.react = window.React;</script>
+<script src="https://unpkg.com/lucide-react@0.263.1/dist/umd/lucide-react.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+const LR = window.LucideReact || {};
+
+function Ico({ name, size = 16, className = '', strokeWidth = 2 }) {
+  const C = LR[name];
+  if (!C) return <span aria-hidden="true" className={className} style={{ display: 'inline-block', width: size, height: size }} />;
+  return <C size={size} strokeWidth={strokeWidth} className={className} aria-hidden="true" />;
+}
+
+/* ---------------- Policy model (mirrors the 2-pager) ---------------- */
+const BUDGET = 100000; // monthly discretionary, via Account Aggregator
+const INTERRUPT_BUDGET = 3;
+const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN');
+
+const PROTECTED = {
+  legal: 'Legal signature', investment: 'Investment', identity: 'Identity',
+  physical_access: 'Physical access', career_comm: 'Career communication'
+};
+const CATEGORIES = ['grocery', 'utilities', 'travel', 'commerce', 'giftcard', 'legal', 'investment', 'identity', 'physical_access', 'career_comm'];
+const APIS = ['UPI', 'UPI AutoPay', 'Aadhaar eSign', 'Smart Lock', 'Email/Message', 'Calendar', 'Broker API'];
+const PROVENANCE = {
+  user_routine: { label: 'Priya · standing routine', external: false },
+  user_calendar: { label: 'Priya · calendar event', external: false },
+  agent_planning: { label: 'Agent planning', external: false },
+  external_email: { label: 'External email', external: true, esc: 'External Email Injection Detected' },
+  web_ad: { label: 'Web page / ad content', external: true, esc: 'Web Content Injection Detected' },
+  external_message: { label: 'External message', external: true, esc: 'External Message Injection Detected' }
+};
+
+const TIER = {
+  1: { short: 'T1', name: 'Routine', text: 'text-emerald-300', chip: 'bg-emerald-400/10 text-emerald-300 ring-emerald-400/40', dot: 'bg-emerald-400 glow-g' },
+  2: { short: 'T2', name: 'Notable', text: 'text-amber-300', chip: 'bg-amber-400/10 text-amber-300 ring-amber-400/40', dot: 'bg-amber-400 glow-a' },
+  3: { short: 'T3', name: 'Critical', text: 'text-rose-300', chip: 'bg-rose-400/10 text-rose-300 ring-rose-400/40', dot: 'bg-rose-400 glow-r' }
+};
+
+function evaluate(p) {
+  const amount = Number(p.amount) || 0;
+  const pct = (amount / BUDGET) * 100;
+  const reasons = [];
+  let base = 1;
+  const bump = (t, text) => { base = Math.max(base, t); reasons.push({ t, text }); };
+  if (PROTECTED[p.category]) bump(3, 'Protected category: ' + PROTECTED[p.category]);
+  if (!p.reversible) bump(3, 'Irreversible action');
+  if (pct > 15) bump(3, pct.toFixed(1) + '% of monthly discretionary (over 15%)');
+  else if (pct >= 2) bump(2, pct.toFixed(1) + '% of monthly discretionary (2–15%)');
+  if (!p.knownPayee) bump(2, 'First-time payee');
+  if (!reasons.length) reasons.push({ t: 1, text: 'Reversible, ' + pct.toFixed(2) + '% of budget, known payee' });
+
+  // ML escalation scorer: may raise a tier, never lower it.
+  const prov = PROVENANCE[p.provenance] || PROVENANCE.agent_planning;
+  const hour = parseInt(String(p.time || '12:00').split(':')[0], 10);
+  const vel = Number(p.velocity) || 1;
+  const esc = [];
+  let final = base;
+  if (prov.external) { esc.push(prov.esc); final = 3; }
+  if (vel >= 3 && hour < 6) { esc.push('Off-Hours Velocity Anomaly'); final = Math.min(3, Math.max(final, base + 1)); }
+  let score = 0.04 + (prov.external ? 0.61 : 0) + (vel >= 3 && hour < 6 ? 0.22 : 0) + (!p.knownPayee ? 0.08 : 0) + (p.sponsored ? 0.05 : 0);
+  score = Math.min(0.99, score);
+  return { pct, base, final, reasons, esc, score, prov, hour, vel };
+}
+
+/* ---------------- Scenarios ---------------- */
+const SCENARIOS = [
+  {
+    id: 'blinkit', tag: 'T1 Auto-Run', tagTier: 1, icon: 'ShoppingCart',
+    title: 'Blinkit grocery reorder', sub: 'Reversible · under 2% of budget · known payee',
+    payload: { tool: 'commerce.order.place', api: 'UPI', payee: 'Blinkit (weekly basket)', amount: 350, category: 'grocery', reversible: true, knownPayee: true, provenance: 'user_routine', time: '18:42', velocity: 1, sponsored: false }
+  },
+  {
+    id: 'flight', tag: 'T2 Digest', tagTier: 2, icon: 'Plane',
+    title: 'Mumbai flight booking', sub: 'Cancellable fare · 2–15% of budget · batched digest',
+    payload: { tool: 'travel.flight.book', api: 'UPI', payee: 'IndiGo 6E-5318 BLR→BOM', amount: 2200, category: 'travel', reversible: true, knownPayee: true, provenance: 'user_calendar', time: '11:05', velocity: 1, sponsored: false }
+  },
+  {
+    id: 'lease', tag: 'T3 Legal Intercept', tagTier: 3, icon: 'FileSignature',
+    title: 'HSR Layout lease eSign & deposit', sub: 'Irreversible · legal signature · over 15% of budget',
+    payload: { tool: 'esign.aadhaar.sign + upi.transfer', api: 'Aadhaar eSign', payee: 'Landlord: R. Kumar (HSR Sector 6)', amount: 135000, category: 'legal', reversible: false, knownPayee: false, provenance: 'agent_planning', time: '14:20', velocity: 1, sponsored: true }
+  },
+  {
+    id: 'ev', tag: 'T3 UPI Intercept', tagTier: 3, icon: 'Bike',
+    title: 'Big Billion Days EV scooter', sub: 'UPI AutoPay · single outflow over 50% of budget',
+    payload: { tool: 'upi.autopay.mandate', api: 'UPI AutoPay', payee: 'Flipkart · Ather Rizta (BBD)', amount: 120000, category: 'commerce', reversible: true, knownPayee: true, provenance: 'agent_planning', time: '00:02', velocity: 1, sponsored: true }
+  },
+  {
+    id: 'gift', tag: 'Dynamic Anomaly', tagTier: 0, icon: 'Gift',
+    title: '₹400 gift card at 3:15 AM', sub: 'From a promotional email link · provenance escalation',
+    payload: { tool: 'commerce.giftcard.buy', api: 'UPI', payee: 'Flipkart Gift Cards', amount: 400, category: 'giftcard', reversible: true, knownPayee: true, provenance: 'external_email', time: '03:15', velocity: 3, sponsored: false }
+  }
+];
+
+const CUSTOM_DEFAULT = { tool: 'smartlock.unlock', api: 'Smart Lock', payee: 'Front door · Yale Assure', amount: 0, category: 'physical_access', reversible: true, knownPayee: true, provenance: 'external_message', time: '02:40', velocity: 1, sponsored: false };
+
+const BOOT = [
+  { k: 'sys', t: '00:00:00.000', m: 'Anumati Core v3.2 · gateway online on Priya’s device' },
+  { k: 'vault', t: '00:00:00.041', m: 'VAULT    sealed · 4 credentials (UPI, Aadhaar eSign, DigiLocker, Smart Lock) · agent access: token-only' },
+  { k: 'sys', t: '00:00:00.087', m: 'POLICY   CPM loaded · deterministic rules · AA consent active (₹1,00,000/mo discretionary)' },
+  { k: 'sys', t: '00:00:00.102', m: 'SCORER   escalate-only mode · provenance, first-time payee, velocity, preference drift' },
+  { k: 'dim', t: '00:00:00.110', m: 'Awaiting tool calls from Personal Agent. Pick a scenario on the left.' }
+];
+
+const SEED = [
+  { id: 'TC-1027', ts: '07:30', tool: 'FASTag recharge', payee: 'NETC FASTag · KA-01', amount: 500, tier: 1, status: 'EXECUTED' },
+  { id: 'TC-1028', ts: '09:12', tool: 'BESCOM bill AutoPay', payee: 'BESCOM · within 6-mo range', amount: 1840, tier: 1, status: 'EXECUTED' },
+  { id: 'TC-1029', ts: '10:03', tool: 'Calendar reschedule', payee: '1:1 with Arjun → Thu 4 PM', amount: 0, tier: 1, status: 'EXECUTED' },
+  { id: 'TC-1030', ts: '13:48', tool: 'Swiggy lunch order', payee: 'Swiggy · Meghana Foods', amount: 420, tier: 1, status: 'REVOKED' }
+];
+
+const KIND = {
+  sys: 'text-blue-300', vault: 'text-violet-300', info: 'text-slate-300', dim: 'text-slate-500', in: 'text-sky-300',
+  ok: 'text-emerald-300', warn: 'text-orange-300', t1: 'text-emerald-300', t2: 'text-amber-300', t3: 'text-rose-300'
+};
+
+const STAGES = [
+  { n: 'Agent', i: 'Bot' }, { n: 'Vault', i: 'KeyRound' }, { n: 'Account Aggregator', i: 'Landmark' },
+  { n: 'Policy engine', i: 'Scale' }, { n: 'Escalation scorer', i: 'Radar' }, { n: 'Decision', i: 'ShieldCheck' }
+];
+
+const STATUS = {
+  EXECUTED: 'bg-emerald-400/10 text-emerald-300 ring-emerald-400/30',
+  MODIFIED: 'bg-cyan-400/10 text-cyan-300 ring-cyan-400/30',
+  PENDING: 'bg-amber-400/10 text-amber-300 ring-amber-400/30',
+  INTERCEPTED: 'bg-rose-400/15 text-rose-300 ring-rose-400/40',
+  REJECTED: 'bg-slate-400/10 text-slate-300 ring-slate-400/30',
+  DECLINED: 'bg-slate-400/10 text-slate-300 ring-slate-400/30',
+  EXPIRED: 'bg-slate-400/10 text-slate-400 ring-slate-400/30',
+  REVOKED: 'bg-violet-400/10 text-violet-300 ring-violet-400/30'
+};
+
+function stamp(time) {
+  const s = String(Math.floor(Math.random() * 60)).padStart(2, '0');
+  const ms = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+  return (time || '12:00') + ':' + s + '.' + ms;
+}
+
+/* ---------------- Small UI pieces ---------------- */
+function TierChip({ tier, label }) {
+  if (!tier) return <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold ring-1 bg-orange-400/10 text-orange-300 ring-orange-400/40">{label || 'ESC'}</span>;
+  const t = TIER[tier];
+  return <span className={'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold ring-1 ' + t.chip}>{label || t.short}</span>;
+}
+
+function PaneTitle({ icon, children, right }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <h2 className="label flex items-center gap-2 text-[12px] font-semibold text-slate-400"><Ico name={icon} size={14} className="text-brandhi" />{children}</h2>
+      {right}
+    </div>
+  );
+}
+
+function Toggle({ id, on, onChange, label }) {
+  return (
+    <button id={id} type="button" role="switch" aria-checked={on} onClick={() => onChange(!on)}
+      className={'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ' + (on ? 'bg-emerald-500/80 glow-g' : 'bg-slate-700')}>
+      <span className="sr-only">{label}</span>
+      <span className={'inline-block h-5 w-5 rounded-full bg-white transition-transform ' + (on ? 'translate-x-5' : 'translate-x-0.5')} />
+    </button>
+  );
+}
+
+/* ---------------- Left pane ---------------- */
+function LeftPane({ busy, run, commitFirst, setCommitFirst, interrupts }) {
+  const over = interrupts > INTERRUPT_BUDGET;
+  return (
+    <section className="pane flex min-w-0 flex-col gap-4 lg:overflow-y-auto lg:pr-1">
+      <div className="rounded-lg border border-line bg-panel p-3">
+        <PaneTitle icon="User">Principal</PaneTitle>
+        <div className="mt-2 flex items-center gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brand font-cond text-lg font-bold text-white ring-2 ring-brandhi/40">P</div>
+          <div className="min-w-0">
+            <div className="font-semibold">Priya</div>
+            <div className="text-xs text-slate-400">Senior Engineering Manager · Bengaluru</div>
+          </div>
+        </div>
+        <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+          <dt className="text-slate-400">Monthly discretionary</dt><dd className="tabnum text-right font-mono">{inr(BUDGET)}</dd>
+          <dt className="text-slate-400">Source</dt><dd className="text-right">Account Aggregator</dd>
+          <dt className="text-slate-400">T1 below</dt><dd className="tabnum text-right font-mono text-emerald-300">{inr(BUDGET * 0.02)}</dd>
+          <dt className="text-slate-400">T3 above</dt><dd className="tabnum text-right font-mono text-rose-300">{inr(BUDGET * 0.15)}</dd>
+        </dl>
+      </div>
+
+      <div className="rounded-lg border border-line bg-panel p-3">
+        <PaneTitle icon="SlidersHorizontal">Controls</PaneTitle>
+        <div className="mt-3 flex items-start justify-between gap-3">
+          <div>
+            <label htmlFor="commit-first" className="text-sm font-medium">Commit-first mode</label>
+            <p className="text-xs text-slate-400">Set your own limit before the agent shows its pick, for protected categories.</p>
+          </div>
+          <Toggle id="commit-first" on={commitFirst} onChange={setCommitFirst} label="Commit-first mode" />
+        </div>
+        <div className="mt-3">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium">Weekly interrupts</span>
+            <span className={'tabnum font-mono ' + (over ? 'text-rose-300' : 'text-slate-200')}>{interrupts}/{INTERRUPT_BUDGET} used</span>
+          </div>
+          <div className="mt-1.5 flex gap-1">
+            {Array.from({ length: Math.max(INTERRUPT_BUDGET, interrupts) }).map((_, i) => (
+              <span key={i} className={'h-1.5 flex-1 rounded-full ' + (i < interrupts ? (i >= INTERRUPT_BUDGET ? 'bg-rose-400 glow-r' : 'bg-brandhi') : 'bg-slate-700')} />
+            ))}
+          </div>
+          {over && <p className="mt-1.5 text-xs text-rose-300">Budget exceeded. T3 intercepts are still enforced; Anumati will suggest rule changes at the weekly review.</p>}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-line bg-panel p-3">
+        <PaneTitle icon="FlaskConical">Test scenarios</PaneTitle>
+        <div className="mt-2 flex flex-col gap-2">
+          {SCENARIOS.map((s) => (
+            <button key={s.id} id={'sc-' + s.id} type="button" disabled={busy} onClick={() => run(s.payload, s.id)}
+              className="group flex w-full items-start gap-3 rounded-md border border-line bg-ink/60 p-2.5 text-left transition hover:border-brandhi/60 hover:bg-brand/20 disabled:cursor-not-allowed disabled:opacity-50">
+              <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-md bg-brand/40 text-brandhi"><Ico name={s.icon} size={16} /></span>
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-2">
+                  <TierChip tier={s.tagTier} label={s.tag} />
+                  <span className="tabnum ml-auto font-mono text-xs text-slate-300">{inr(s.payload.amount)}</span>
+                </span>
+                <span className="mt-1 block text-sm font-medium text-slate-100">{s.title}</span>
+                <span className="block text-xs text-slate-400">{s.sub}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <PayloadBuilder busy={busy} run={run} />
+    </section>
+  );
+}
+
+function PayloadBuilder({ busy, run }) {
+  const [p, setP] = useState(CUSTOM_DEFAULT);
+  const [tab, setTab] = useState('form');
+  const [json, setJson] = useState(JSON.stringify(CUSTOM_DEFAULT, null, 2));
+  const [err, setErr] = useState('');
+  const set = (k, v) => { const n = { ...p, [k]: v }; setP(n); setJson(JSON.stringify(n, null, 2)); };
+  let preview = null;
+  try { preview = evaluate(tab === 'json' ? JSON.parse(json) : p); } catch (e) { preview = null; }
+
+  const send = () => {
+    let payload = p;
+    if (tab === 'json') {
+      try { payload = { ...CUSTOM_DEFAULT, ...JSON.parse(json) }; setP(payload); setErr(''); }
+      catch (e) { setErr('JSON is not valid. Check commas and quotes, then send again.'); return; }
+    }
+    run(payload, 'custom');
+  };
+
+  const field = 'w-full rounded border border-line bg-ink px-2 py-1.5 text-sm text-slate-100';
+  return (
+    <div className="rounded-lg border border-line bg-panel p-3">
+      <PaneTitle icon="Braces" right={
+        <div className="flex rounded border border-line text-xs">
+          {['form', 'json'].map((t) => (
+            <button key={t} type="button" onClick={() => setTab(t)} className={'px-2 py-0.5 uppercase ' + (tab === t ? 'bg-brand text-white' : 'text-slate-400')}>{t}</button>
+          ))}
+        </div>
+      }>Custom payload</PaneTitle>
+
+      {tab === 'form' ? (
+        <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+          <label className="col-span-2 flex flex-col gap-1"><span className="text-slate-400">Tool call</span>
+            <input id="cp-tool" className={field + ' font-mono'} value={p.tool} onChange={(e) => set('tool', e.target.value)} /></label>
+          <label className="col-span-2 flex flex-col gap-1"><span className="text-slate-400">Payee</span>
+            <input id="cp-payee" className={field} value={p.payee} onChange={(e) => set('payee', e.target.value)} /></label>
+          <label className="flex flex-col gap-1"><span className="text-slate-400">Amount (₹)</span>
+            <input id="cp-amount" type="number" min="0" className={field + ' tabnum font-mono'} value={p.amount} onChange={(e) => set('amount', Number(e.target.value))} /></label>
+          <label className="flex flex-col gap-1"><span className="text-slate-400">Time</span>
+            <input id="cp-time" type="time" className={field + ' font-mono'} value={p.time} onChange={(e) => set('time', e.target.value)} /></label>
+          <label className="flex flex-col gap-1"><span className="text-slate-400">API type</span>
+            <select id="cp-api" className={field} value={p.api} onChange={(e) => set('api', e.target.value)}>{APIS.map((a) => <option key={a}>{a}</option>)}</select></label>
+          <label className="flex flex-col gap-1"><span className="text-slate-400">Category</span>
+            <select id="cp-cat" className={field} value={p.category} onChange={(e) => set('category', e.target.value)}>{CATEGORIES.map((c) => <option key={c} value={c}>{c}{PROTECTED[c] ? ' *' : ''}</option>)}</select></label>
+          <label className="col-span-2 flex flex-col gap-1"><span className="text-slate-400">Instruction provenance</span>
+            <select id="cp-prov" className={field} value={p.provenance} onChange={(e) => set('provenance', e.target.value)}>{Object.entries(PROVENANCE).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></label>
+          <label className="flex flex-col gap-1"><span className="text-slate-400">Attempts / 10 min</span>
+            <input id="cp-vel" type="number" min="1" className={field + ' tabnum font-mono'} value={p.velocity} onChange={(e) => set('velocity', Number(e.target.value))} /></label>
+          <div className="flex flex-col justify-end gap-1.5 pb-1">
+            <label className="flex items-center gap-2"><input id="cp-rev" type="checkbox" checked={p.reversible} onChange={(e) => set('reversible', e.target.checked)} />Reversible</label>
+            <label className="flex items-center gap-2"><input id="cp-known" type="checkbox" checked={p.knownPayee} onChange={(e) => set('knownPayee', e.target.checked)} />Known payee</label>
+          </div>
+        </div>
+      ) : (
+        <textarea id="cp-json" spellCheck="false" value={json} onChange={(e) => setJson(e.target.value)}
+          className="mt-2 h-56 w-full rounded border border-line bg-ink p-2 font-mono text-xs text-emerald-200" />
+      )}
+      {err && <p className="mt-1 text-xs text-rose-300">{err}</p>}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-xs text-slate-400">Predicted: {preview ? <TierChip tier={preview.final} label={(preview.final > preview.base ? 'T' + preview.base + ' → ' : '') + 'T' + preview.final} /> : <span className="text-rose-300">invalid</span>}</span>
+        <button id="cp-send" type="button" disabled={busy} onClick={send}
+          className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-semibold text-white ring-1 ring-brandhi/50 hover:bg-[#0d4aa0] disabled:opacity-50">
+          <Ico name="Send" size={14} />Send to gateway</button>
+      </div>
+      <p className="mt-1.5 text-[11px] text-slate-500">* protected category: always T3</p>
+    </div>
+  );
+}
+
+/* ---------------- Center pane ---------------- */
+function Pipeline({ stage, finalTier }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {STAGES.map((s, i) => {
+        const active = i === stage;
+        const done = stage > i;
+        let tone = 'border-line text-slate-500';
+        if (done) tone = 'border-brandhi/40 text-slate-200';
+        if (active) tone = 'border-brandhi text-white bg-brand/40 glow-b';
+        if (i === 5 && stage === 5 && finalTier) tone = finalTier === 3 ? 'border-rose-400 text-rose-200 bg-rose-500/15 glow-r' : finalTier === 2 ? 'border-amber-400 text-amber-200 bg-amber-500/10 glow-a' : 'border-emerald-400 text-emerald-200 bg-emerald-500/10 glow-g';
+        return (
+          <React.Fragment key={s.n}>
+            <span className={'inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition ' + tone}><Ico name={s.i} size={13} />{s.n}</span>
+            {i < STAGES.length - 1 && <Ico name="ChevronRight" size={14} className="text-slate-600" />}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+function Verdict({ last }) {
+  if (!last) {
+    return (
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {['Base tier', 'Final tier', 'Budget impact', 'Anomaly score'].map((l) => (
+          <div key={l} className="rounded-md border border-line bg-ink/60 p-2"><div className="label text-[10px] text-slate-500">{l}</div><div className="font-mono text-slate-600">--</div></div>
+        ))}
+      </div>
+    );
+  }
+  const { ev } = last;
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="rounded-md border border-line bg-ink/60 p-2"><div className="label text-[10px] text-slate-500">Base tier (rules)</div><div className={'font-mono font-semibold ' + TIER[ev.base].text}>T{ev.base} {TIER[ev.base].name}</div></div>
+      <div className="rounded-md border border-line bg-ink/60 p-2"><div className="label text-[10px] text-slate-500">Final tier</div><div className={'font-mono font-semibold ' + TIER[ev.final].text}>T{ev.final} {TIER[ev.final].name}</div></div>
+      <div className="rounded-md border border-line bg-ink/60 p-2"><div className="label text-[10px] text-slate-500">Budget impact</div><div className="tabnum font-mono">{ev.pct.toFixed(2)}%</div></div>
+      <div className="rounded-md border border-line bg-ink/60 p-2"><div className="label text-[10px] text-slate-500">Anomaly score</div><div className={'tabnum font-mono ' + (ev.score > 0.5 ? 'text-orange-300' : 'text-slate-200')}>{ev.score.toFixed(2)}</div></div>
+    </div>
+  );
+}
+
+function Terminal({ lines, busy }) {
+  const ref = useRef(null);
+  useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight; }, [lines]);
+  return (
+    <div className="flex min-h-[320px] flex-1 flex-col overflow-hidden rounded-lg border border-line bg-ink">
+      <div className="flex items-center gap-2 border-b border-line px-3 py-1.5 text-xs text-slate-400">
+        <Ico name="TerminalSquare" size={14} className="text-brandhi" /><span className="font-mono">anumati-gate · live</span>
+        <span className="ml-auto inline-flex items-center gap-1.5"><span className={'h-2 w-2 rounded-full ' + (busy ? 'bg-amber-400 glow-a' : 'bg-emerald-400 glow-g')} />{busy ? 'evaluating' : 'idle'}</span>
+      </div>
+      <div ref={ref} className="term flex-1 overflow-auto p-3 font-mono text-[12px] leading-relaxed">
+        {lines.map((l, i) => (
+          <div key={i} className="line-in flex gap-3 whitespace-pre-wrap break-words">
+            <span className="shrink-0 text-slate-600">{l.t}</span><span className={KIND[l.k] || 'text-slate-300'}>{l.m}</span>
+          </div>
+        ))}
+        <div className="flex gap-3"><span className="text-slate-600">{'>'}</span><span className="caret text-brandhi">█</span></div>
+      </div>
+    </div>
+  );
+}
+
+function Digest({ items, approve, decline }) {
+  if (!items.length) return null;
+  return (
+    <div className="rounded-lg border border-amber-400/40 bg-[#1a160a] p-3 shadow-lg shadow-black/40">
+      <div className="flex items-center gap-2 text-sm font-semibold text-amber-200"><Ico name="BellRing" size={16} />Batched digest · {items.length} notable action{items.length > 1 ? 's' : ''}</div>
+      <div className="mt-2 flex flex-col gap-2">
+        {items.map((d) => (
+          <div key={d.id} className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-ink/70 p-2">
+            <TierChip tier={2} />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm">{d.tool}</div>
+              <div className="truncate text-xs text-slate-400">{d.payee} · <span className="tabnum font-mono">{inr(d.amount)}</span> · {d.why}</div>
+            </div>
+            <button id={'dg-ok-' + d.id} type="button" onClick={() => approve(d.id)} className="inline-flex items-center gap-1 rounded bg-amber-400 px-2.5 py-1 text-xs font-semibold text-slate-900 hover:bg-amber-300"><Ico name="Check" size={13} />Approve</button>
+            <button id={'dg-no-' + d.id} type="button" onClick={() => decline(d.id)} className="rounded border border-line px-2.5 py-1 text-xs text-slate-300 hover:border-slate-500">Decline</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Consent modal (T3) ---------------- */
+function buildCard(ctx, maxRent, commitFirst) {
+  const { p, ev, scenarioId } = ctx;
+  if (scenarioId === 'lease') {
+    const rent = 45000;
+    const over = Math.round(((rent - maxRent) / maxRent) * 100);
+    return {
+      action: 'Aadhaar eSign & Deposit Outflow',
+      detail: '11-month lease · Flat 4B, HSR Layout Sector 6 · rent ₹45,000/mo · deposit ₹1,35,000',
+      prov: { tone: 'warn', head: 'Sponsored placement detected in agent context window', sub: 'The listing came from a paid “Featured” slot on a rental portal. The agent ranked it #1.' },
+      reasons: [
+        over > 0 ? 'Rent exceeds your pre-committed max (' + inr(maxRent) + ') by ' + over + '%.' : 'Rent is within your pre-committed max (' + inr(maxRent) + ').',
+        '2 unsponsored flats within budget were ranked lower by the agent (#3, #4).',
+        'Binding legal signature plus a deposit of 135% of monthly discretionary spend.'
+      ],
+      note: commitFirst ? null : 'Commit-first is off, so you are seeing the agent’s pick before setting a limit. Using your last saved limit.',
+      alts: [
+        { key: 'alt1', label: 'Unsponsored option #1', desc: 'HSR Sector 2 · 2BHK · ₹36,000/mo · agent rank #3', payee: 'Landlord: S. Iyer (HSR Sector 2)', amount: 108000 },
+        { key: 'alt2', label: 'Unsponsored option #2', desc: 'HSR Sector 4 · 2BHK · ₹37,500/mo · agent rank #4', payee: 'Landlord: A. Nair (HSR Sector 4)', amount: 112500 }
+      ],
+      altButton: { idx: 1, label: 'Select unsponsored option #2' },
+      decoys: ['Landlord: S. Iyer (HSR Sector 2)', 'NoBroker escrow account']
+    };
+  }
+  if (scenarioId === 'ev') {
+    return {
+      action: 'UPI AutoPay Outflow',
+      detail: 'Ather Rizta EV scooter · Big Billion Days pre-booking · Flipkart',
+      prov: { tone: 'info', head: 'Sale banner in agent context', sub: 'The agent acted on a BBD “lowest price ever” banner. Price matches the 30-day median.' },
+      reasons: [
+        'Single outflow of ' + inr(p.amount) + ' is ' + Math.round(ev.pct) + '% of monthly discretionary (over 50%).',
+        'AutoPay mandate would debit without a further prompt.',
+        'Not on your purchase list for this quarter.'
+      ],
+      alts: [{ key: 'cap', label: 'Refundable token booking', desc: 'Reserve the BBD price with a ₹2,499 refundable token; pay the balance at delivery.', payee: 'Flipkart · Ather Rizta (BBD)', amount: 2499 }],
+      altButton: { idx: 0, label: 'Pay ₹2,499 refundable token only' },
+      decoys: ['Ather Energy direct', 'Flipkart Pay Later']
+    };
+  }
+  if (scenarioId === 'gift') {
+    return {
+      action: 'Gift Card Purchase',
+      detail: '₹400 Flipkart Gift Card · code to be emailed to claims@reward-hub.co',
+      prov: { tone: 'danger', head: 'Instruction came from a promotional email, not from Priya', sub: 'The email “Claim your ₹5,000 reward” contained hidden text telling the agent to buy a gift card and send the code to an outside address. This is a prompt-injection pattern.' },
+      reasons: [
+        'Rules alone: T1 (₹400 is 0.4% of budget, known payee).',
+        'Escalated to T3: external email instruction, and 3 gift-card attempts in 9 minutes at 03:15.',
+        'Gift card codes cannot be recalled once sent.'
+      ],
+      alts: [],
+      altButton: { idx: -1, label: 'Reject & report email as phishing' },
+      decoys: ['Priya’s own Flipkart account', 'Amazon Pay balance']
+    };
+  }
+  return {
+    action: p.tool,
+    detail: p.payee + ' · ' + p.api + ' · ' + inr(p.amount),
+    prov: ev.prov.external
+      ? { tone: 'danger', head: 'Instruction came from: ' + ev.prov.label, sub: 'This action was not requested by Priya. Treat it as a possible prompt injection.' }
+      : { tone: 'info', head: 'Instruction came from: ' + ev.prov.label, sub: 'No sponsored or external inputs detected.' },
+    reasons: ev.reasons.map((r) => r.text).concat(ev.esc.map((e) => 'Escalated: ' + e)),
+    alts: [],
+    altButton: null,
+    decoys: ['Priya’s savings account', 'Unknown merchant']
+  };
+}
+
+function ConsentModal({ ctx, commitFirst, savedMax, setSavedMax, onRubber, onResolve }) {
+  const needsCommit = ctx.scenarioId === 'lease' && commitFirst;
+  const [step, setStep] = useState(needsCommit ? 'commit' : 'card');
+  const [maxRent, setMaxRent] = useState(savedMax);
+  const [left, setLeft] = useState(120);
+  const [pk, setPk] = useState(null); // { phase, target, status }
+  const [checkMsg, setCheckMsg] = useState('');
+  const openedAt = useRef(Date.now());
+  const card = buildCard(ctx, maxRent, commitFirst);
+  const target0 = { payee: ctx.p.payee, amount: ctx.p.amount };
+
+  useEffect(() => { if (step === 'card') openedAt.current = Date.now(); }, [step]);
+  useEffect(() => {
+    if (step === 'passkey') return;
+    const t = setInterval(() => setLeft((s) => s - 1), 1000);
+    return () => clearInterval(t);
+  }, [step]);
+  useEffect(() => { if (left <= 0) onResolve({ status: 'EXPIRED', note: 'No decision within 2 minutes · intercept expired as declined · no token minted' }); }, [left]);
+
+  const startPasskey = (target, status) => {
+    setStep('passkey');
+    setPk({ phase: 'scan', target, status });
+    setTimeout(() => setPk((x) => x && { ...x, phase: 'bind' }), 1400);
+    setTimeout(() => setPk((x) => x && { ...x, phase: 'done', tok: 'tok_' + Math.random().toString(36).slice(2, 10) }), 2300);
+  };
+  const approve = () => {
+    if (Date.now() - openedAt.current < 3000) { onRubber(); setCheckMsg(''); setStep('check'); return; }
+    startPasskey(target0, 'EXECUTED');
+  };
+  const alt = () => {
+    const b = card.altButton;
+    if (!b) return;
+    if (b.idx < 0) { onResolve({ status: 'REJECTED', note: 'Call dropped · email reported as phishing · sender blocked for agent context' }); return; }
+    const a = card.alts[b.idx];
+    startPasskey({ payee: a.payee, amount: a.amount }, 'MODIFIED');
+  };
+  const answer = (choice) => {
+    if (choice === target0.payee) startPasskey(target0, 'EXECUTED');
+    else { setCheckMsg('That is not the payee on this card. Read the card again before approving.'); setStep('card'); }
+  };
+  const mm = Math.floor(Math.max(left, 0) / 60) + ':' + String(Math.max(left, 0) % 60).padStart(2, '0');
+  const provTone = card.prov.tone === 'danger' ? 'border-rose-400/50 bg-rose-500/10 text-rose-200' : card.prov.tone === 'warn' ? 'border-orange-400/50 bg-orange-500/10 text-orange-200' : 'border-sky-400/40 bg-sky-500/10 text-sky-200';
+  const options = [target0.payee, ...card.decoys].sort((a, b) => (a.length % 3) - (b.length % 3));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="cc-title">
+      <div className="max-h-full w-full max-w-2xl overflow-y-auto rounded-xl border border-rose-400/50 bg-[#0c1426] shadow-2xl glow-r">
+        <div className="flex flex-wrap items-center gap-2 border-b border-line bg-rose-500/10 px-4 py-2.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-rose-400 glow-r" />
+          <span className="label text-xs font-semibold text-rose-200">Tier 3: high-stakes intercept</span>
+          <span className="font-mono text-xs text-slate-400">{ctx.id} · execution held · token withheld</span>
+          {step !== 'passkey' && <span className="tabnum ml-auto font-mono text-xs text-slate-300">expires as declined in {mm}</span>}
+        </div>
+
+        {step === 'commit' && (
+          <div className="p-5">
+            <div className="flex items-center gap-2 text-sky-200"><Ico name="Lock" size={18} /><h3 id="cc-title" className="font-cond text-xl font-bold">Commit first</h3></div>
+            <p className="mt-2 text-sm text-slate-300">Before you see the agent’s pick: what is the most you will pay in monthly rent? Anumati checks the agent against your number, not the other way round.</p>
+            <label htmlFor="max-rent" className="mt-4 block text-xs text-slate-400">Maximum monthly rent</label>
+            <div className="mt-1 flex flex-wrap items-center gap-3">
+              <input id="max-rent" type="range" min="25000" max="60000" step="500" value={maxRent} onChange={(e) => setMaxRent(Number(e.target.value))} className="flex-1 accent-sky-400" />
+              <span className="tabnum w-24 text-right font-mono text-lg">{inr(maxRent)}</span>
+            </div>
+            <button id="commit-lock" type="button" onClick={() => { setSavedMax(maxRent); setStep('card'); }} className="mt-5 inline-flex items-center gap-2 rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-sky-400"><Ico name="LockKeyhole" size={15} />Lock my limit and show the card</button>
+          </div>
+        )}
+
+        {step === 'card' && (
+          <div className="flex flex-col gap-4 p-5">
+            <div>
+              <div className="label text-[11px] text-slate-500">Attempted action</div>
+              <h3 id="cc-title" className="font-cond text-2xl font-bold text-white">{card.action}</h3>
+              <p className="text-sm text-slate-400">{card.detail}</p>
+              <p className="mt-1 text-xs text-slate-500">Card written by Anumati from the verified payload, not by the agent.</p>
+            </div>
+            <div className={'rounded-lg border p-3 ' + provTone}>
+              <div className="flex items-center gap-2 font-semibold"><Ico name="AlertTriangle" size={16} />Provenance: {card.prov.head}</div>
+              <p className="mt-1 text-sm opacity-90">{card.prov.sub}</p>
+            </div>
+            <div>
+              <div className="label text-[11px] text-slate-500">Why this was intercepted</div>
+              <ul className="mt-1 flex flex-col gap-1 text-sm">
+                {card.reasons.map((r, i) => <li key={i} className="flex gap-2"><Ico name="ChevronRight" size={14} className="mt-0.5 shrink-0 text-rose-300" />{r}</li>)}
+              </ul>
+              {card.note && <p className="mt-2 rounded border border-amber-400/30 bg-amber-400/5 p-2 text-xs text-amber-200">{card.note}</p>}
+            </div>
+            {card.alts.length > 0 && (
+              <div>
+                <div className="label text-[11px] text-slate-500">Alternatives the agent ranked lower</div>
+                <div className="mt-1 grid gap-2 sm:grid-cols-2">
+                  {card.alts.map((a) => (
+                    <div key={a.key} className="rounded-md border border-line bg-ink/70 p-2">
+                      <div className="text-sm font-medium text-cyan-200">{a.label}</div>
+                      <div className="text-xs text-slate-400">{a.desc}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {checkMsg && <p className="rounded border border-rose-400/40 bg-rose-500/10 p-2 text-sm text-rose-200">{checkMsg}</p>}
+            <div className="flex flex-col gap-2 border-t border-line pt-4 sm:flex-row sm:flex-wrap">
+              <button id="cc-approve" type="button" onClick={approve} className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"><Ico name="Fingerprint" size={16} />Approve via FIDO2 passkey</button>
+              <button id="cc-reject" type="button" onClick={() => onResolve({ status: 'REJECTED', note: 'API call dropped · no token minted · agent notified' })} className="inline-flex items-center justify-center gap-2 rounded-md border border-rose-400/60 px-4 py-2 text-sm font-semibold text-rose-200 hover:bg-rose-500/10"><Ico name="XOctagon" size={16} />Reject & drop call</button>
+              {card.altButton && <button id="cc-alt" type="button" onClick={alt} className="inline-flex items-center justify-center gap-2 rounded-md border border-cyan-400/60 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/10"><Ico name={card.altButton.idx < 0 ? 'MailWarning' : 'GitBranch'} size={16} />{card.altButton.label}</button>}
+            </div>
+          </div>
+        )}
+
+        {step === 'check' && (
+          <div className="p-5">
+            <div className="flex items-center gap-2 text-amber-200"><Ico name="Timer" size={18} /><h3 id="cc-title" className="font-cond text-xl font-bold">That was under 3 seconds</h3></div>
+            <p className="mt-2 text-sm text-slate-300">Fast approvals on high-stakes actions are often reflex taps. Which payee are you approving?</p>
+            <div className="mt-4 flex flex-col gap-2">
+              {options.map((o) => (
+                <button key={o} type="button" onClick={() => answer(o)} className="rounded-md border border-line bg-ink/70 px-3 py-2 text-left text-sm hover:border-amber-400/60">{o}</button>
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-slate-500">Logged as a rubber-stamp signal. This is a guardrail metric, not a penalty.</p>
+          </div>
+        )}
+
+        {step === 'passkey' && pk && (
+          <div className="flex flex-col items-center p-8 text-center">
+            <div className={'relative grid h-28 w-28 place-items-center overflow-hidden rounded-full border-2 ' + (pk.phase === 'done' ? 'border-emerald-400 bg-emerald-500/15' : 'scan border-emerald-400/70 bg-emerald-500/5')}>
+              <Ico name={pk.phase === 'done' ? 'ShieldCheck' : 'Fingerprint'} size={56} strokeWidth={1.5} className="text-emerald-300" />
+              {pk.phase !== 'done' && <span className="sweep absolute left-2 right-2 h-0.5 bg-emerald-300 shadow-[0_0_10px_#34d399]" />}
+            </div>
+            <h3 id="cc-title" className="mt-5 font-cond text-xl font-bold text-emerald-200">
+              {pk.phase === 'scan' ? 'Verifying FIDO2 passkey…' : pk.phase === 'bind' ? 'Binding approval to payee and amount…' : 'Single-use token released'}
+            </h3>
+            <p className="mt-1 text-sm text-slate-400">{pk.target.payee} · <span className="tabnum font-mono">{inr(pk.target.amount)}</span></p>
+            {pk.phase === 'done' && (
+              <>
+                <pre className="mt-4 w-full overflow-x-auto rounded-md border border-emerald-400/30 bg-ink p-3 text-left font-mono text-xs text-emerald-200">{`token   ${pk.tok}
+scope   { action: "${ctx.p.tool}",
+          payee:  "${pk.target.payee}",
+          amount: ${pk.target.amount},
+          expiry: "120s", uses: 1 }`}</pre>
+                <button id="cc-done" type="button" onClick={() => onResolve({ status: pk.status, note: 'Token ' + pk.tok + ' released to agent · scope bound to payee and amount', payee: pk.target.payee, amount: pk.target.amount })} className="mt-5 rounded-md bg-emerald-500 px-5 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400">Release to agent and close</button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Right pane ---------------- */
+function Metrics({ m }) {
+  const ivr = m.decided ? Math.round((m.valued / m.decided) * 100) : null;
+  const tiles = [
+    { l: 'Unintended executions prevented', v: m.prevented, s: 'T3 rejected, redirected or expired', c: 'text-emerald-300', i: 'ShieldOff' },
+    { l: 'Intercept value rate', v: ivr === null ? '--' : ivr + '%', s: 'Healthy band 15–30%', c: 'text-sky-300', i: 'Target' },
+    { l: 'Rubber-stamp taps flagged', v: m.rubber, s: 'T3 approvals under 3s', c: 'text-amber-300', i: 'Timer' },
+    { l: 'Revoked after execution', v: m.revoked, s: 'Regret signal (RA/1k input)', c: 'text-violet-300', i: 'Undo2' }
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {tiles.map((t) => (
+        <div key={t.l} className="rounded-lg border border-line bg-panel p-2.5">
+          <div className="flex items-center gap-1.5 text-[11px] text-slate-400"><Ico name={t.i} size={13} className={t.c} />{t.l}</div>
+          <div className={'tabnum mt-1 font-mono text-2xl font-semibold ' + t.c}>{t.v}</div>
+          <div className="text-[11px] text-slate-500">{t.s}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Ledger({ rows, revoke }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-line bg-panel">
+      <div className="flex items-center justify-between border-b border-line px-3 py-2">
+        <PaneTitle icon="ScrollText">Audit ledger</PaneTitle>
+        <span className="text-[11px] text-slate-500">append-only · 30-day window</span>
+      </div>
+      <div className="pane min-h-0 flex-1 overflow-auto">
+        <table className="w-full min-w-[420px] text-left text-xs">
+          <thead className="sticky top-0 bg-panel text-[10px] text-slate-500">
+            <tr className="label">
+              <th className="px-3 py-1.5 font-semibold">Time</th>
+              <th className="px-2 py-1.5 font-semibold">Tool call</th>
+              <th className="px-2 py-1.5 font-semibold">Tier</th>
+              <th className="px-2 py-1.5 font-semibold">Status</th>
+              <th className="px-3 py-1.5 text-right font-semibold">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const canRevoke = r.status === 'EXECUTED' && r.tier < 3 && !r.revoking;
+              return (
+                <tr key={r.id} className={'border-t border-line/70 align-top ' + (r.flash ? 'row-flash' : '')}>
+                  <td className="tabnum px-3 py-2 font-mono text-slate-400">{r.ts}</td>
+                  <td className="px-2 py-2">
+                    <div className={'font-medium ' + (r.status === 'REVOKED' ? 'text-slate-500 line-through' : 'text-slate-100')}>{r.tool}</div>
+                    <div className="text-slate-500">{r.payee} · <span className="tabnum font-mono">{inr(r.amount)}</span></div>
+                  </td>
+                  <td className="px-2 py-2"><TierChip tier={r.tier} /></td>
+                  <td className="px-2 py-2"><span className={'inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ring-1 ' + (STATUS[r.status] || STATUS.REJECTED) + (r.status === 'INTERCEPTED' ? ' animate-pulse' : '')}>{r.status}</span></td>
+                  <td className="px-3 py-2 text-right">
+                    {r.revoking ? (
+                      <span className="inline-flex items-center gap-1 text-violet-300"><Ico name="RotateCcw" size={13} className="undo-spin" />revoking</span>
+                    ) : canRevoke ? (
+                      <button type="button" onClick={() => revoke(r.id)} className="inline-flex items-center gap-1 rounded border border-violet-400/50 px-2 py-0.5 text-[11px] font-semibold text-violet-200 hover:bg-violet-500/15"><Ico name="Undo2" size={12} />1-click revoke</button>
+                    ) : <span className="text-slate-600">--</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- App ---------------- */
+function App() {
+  const [commitFirst, setCommitFirst] = useState(true);
+  const [interrupts, setInterrupts] = useState(2);
+  const [savedMax, setSavedMax] = useState(38000);
+  const [lines, setLines] = useState(BOOT);
+  const [stage, setStage] = useState(-1);
+  const [busy, setBusy] = useState(false);
+  const [banner, setBanner] = useState(null);
+  const [ledger, setLedger] = useState(SEED.slice().reverse());
+  const [digest, setDigest] = useState([]);
+  const [modal, setModal] = useState(null);
+  const [last, setLast] = useState(null);
+  const [m, setM] = useState({ prevented: 0, decided: 0, valued: 0, rubber: 0, revoked: 1 });
+  const seq = useRef(1031);
+
+  const log = (k, m2, time) => setLines((ls) => ls.concat({ k, t: stamp(time), m: m2 }).slice(-300));
+  const patchRow = (id, patch) => setLedger((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const addRow = (row) => setLedger((rs) => [{ ...row, flash: true }].concat(rs));
+
+  const run = (p, scenarioId) => {
+    if (busy) return;
+    setBusy(true);
+    setBanner(null);
+    const id = 'TC-' + seq.current++;
+    const ev = evaluate(p);
+    setLast(null);
+    const title = scenarioId === 'custom' ? p.tool : (SCENARIOS.find((s) => s.id === scenarioId) || {}).title || p.tool;
+    const tok = 'tok_' + Math.random().toString(36).slice(2, 8);
+    const steps = [
+      [0, 'in', '⇢ ' + id + ' tool_call from Personal Agent: ' + p.tool],
+      [0, 'dim', '   payee="' + p.payee + '" amount=' + inr(p.amount) + ' api=' + p.api],
+      [1, 'vault', 'VAULT    agent holds 0 standing credentials · token request held at gateway'],
+      [2, 'info', 'AA       discretionary ₹1,00,000/mo · impact ' + ev.pct.toFixed(2) + '%'],
+      [3, 'info', 'MANIFEST category=' + p.category + ' reversible=' + p.reversible + ' known_payee=' + p.knownPayee],
+      [3, 't' + ev.base, 'POLICY   base tier T' + ev.base + ' · ' + ev.reasons.map((r) => r.text).join(' · ')],
+      [4, ev.esc.length ? 'warn' : 'ok', 'SCORER   provenance=' + p.provenance + ' velocity=' + ev.vel + '/10min anomaly=' + ev.score.toFixed(2) + ' → ' + (ev.final > ev.base ? 'ESCALATE T' + ev.base + ' → T' + ev.final : 'no escalation (escalate-only)')]
+    ];
+    if (ev.final === 1) steps.push([5, 't1', 'DECISION T1 AUTO-PASS in 6ms → ' + tok + ' scope{payee, ' + inr(p.amount) + ', exp 60s, uses 1}']);
+    if (ev.final === 2) steps.push([5, 't2', 'DECISION T2 → added to batched digest · awaiting 1-tap approval']);
+    if (ev.final === 3) steps.push([5, 't3', 'DECISION T3 HARD BLOCK · token withheld · execution held · consent card issued']);
+
+    const gap = ev.final === 1 ? 140 : 230;
+    steps.forEach(([st, k, msg], i) => {
+      setTimeout(() => { setStage(st); log(k, msg, p.time); }, i * gap);
+    });
+    setTimeout(() => {
+      setLast({ ev, p, id });
+      if (ev.final > ev.base) setBanner('Risk Escalated T' + ev.base + ' → T' + ev.final + ': ' + ev.esc.join(' & ') + '.');
+      const row = { id, ts: p.time, tool: title, payee: p.payee, amount: p.amount, tier: ev.final };
+      if (ev.final === 1) {
+        addRow({ ...row, status: 'EXECUTED' });
+        setBusy(false);
+      } else if (ev.final === 2) {
+        addRow({ ...row, status: 'PENDING' });
+        setDigest((d) => d.concat({ ...row, why: ev.reasons.map((r) => r.text).join(' · ') }));
+        setBusy(false);
+      } else {
+        addRow({ ...row, status: 'INTERCEPTED' });
+        setInterrupts((n) => n + 1);
+        setModal({ id, p, ev, scenarioId, tok });
+      }
+    }, steps.length * gap + 120);
+  };
+
+  const resolve = (res) => {
+    const ctx = modal;
+    if (!ctx) return;
+    const patch = { status: res.status };
+    if (res.payee) { patch.payee = res.payee; patch.amount = res.amount; }
+    patchRow(ctx.id, patch);
+    const kind = res.status === 'EXECUTED' ? 'ok' : res.status === 'MODIFIED' ? 'info' : 'warn';
+    log(kind, 'CONSENT  ' + ctx.id + ' → ' + res.status + ' · ' + res.note, ctx.p.time);
+    setM((x) => ({
+      ...x,
+      decided: x.decided + 1,
+      valued: x.valued + (res.status === 'REJECTED' || res.status === 'MODIFIED' ? 1 : 0),
+      prevented: x.prevented + (res.status === 'EXECUTED' ? 0 : 1)
+    }));
+    setModal(null);
+    setStage(-1);
+    setBusy(false);
+  };
+
+  const onRubber = () => {
+    setM((x) => ({ ...x, rubber: x.rubber + 1 }));
+    if (modal) log('warn', 'GUARD    ' + modal.id + ' approval tapped under 3s · comprehension check shown', modal.p.time);
+  };
+
+  const approveDigest = (id) => {
+    const d = digest.find((x) => x.id === id);
+    setDigest((ds) => ds.filter((x) => x.id !== id));
+    patchRow(id, { status: 'EXECUTED', flash: true });
+    if (d) log('t2', 'DIGEST   ' + id + ' approved with 1 tap → token minted · ' + d.payee + ' · ' + inr(d.amount), d.ts);
+  };
+  const declineDigest = (id) => {
+    const d = digest.find((x) => x.id === id);
+    setDigest((ds) => ds.filter((x) => x.id !== id));
+    patchRow(id, { status: 'DECLINED' });
+    if (d) log('dim', 'DIGEST   ' + id + ' declined · no token minted', d.ts);
+  };
+
+  const revoke = (id) => {
+    const r = ledger.find((x) => x.id === id);
+    patchRow(id, { revoking: true, flash: false });
+    setTimeout(() => {
+      patchRow(id, { revoking: false, status: 'REVOKED', flash: true });
+      setM((x) => ({ ...x, revoked: x.revoked + 1 }));
+      if (r) log('vault', 'REVOKE   ' + id + ' · cancel sent to ' + r.payee + ' API · refund of ' + inr(r.amount) + ' initiated · token invalidated', r.ts);
+    }, 900);
+  };
+
+  return (
+    <div className="shell grid-bg flex min-h-full flex-col gap-3 pb-4 pt-3 lg:h-full">
+      <header className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-line bg-panel/90 px-4 py-2.5">
+        <div className="flex items-center gap-2.5">
+          <span className="grid h-9 w-9 place-items-center rounded-md bg-brand ring-1 ring-brandhi/60 glow-b"><Ico name="ShieldCheck" size={20} className="text-white" /></span>
+          <div>
+            <h1 className="font-cond text-xl font-bold leading-none tracking-wide text-white">Anumati Core</h1>
+            <p className="text-xs text-slate-400">Zero-trust consent gateway for personal AI agents</p>
+          </div>
+        </div>
+        <div className="ml-auto flex flex-wrap gap-2 text-[11px]">
+          <span className="inline-flex items-center gap-1.5 rounded border border-line bg-ink/70 px-2 py-1"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400 glow-g" />Gateway <b className="text-emerald-300">ENFORCING</b></span>
+          <span className="inline-flex items-center gap-1.5 rounded border border-line bg-ink/70 px-2 py-1"><Ico name="KeyRound" size={12} className="text-violet-300" />Vault sealed · 0 agent credentials</span>
+          <span className="inline-flex items-center gap-1.5 rounded border border-line bg-ink/70 px-2 py-1"><Ico name="Scale" size={12} className="text-sky-300" />Rules decide · ML escalate-only</span>
+        </div>
+      </header>
+
+      <main className="grid flex-1 gap-3 lg:min-h-0 lg:grid-cols-[320px_minmax(0,1fr)_400px]">
+        <LeftPane busy={busy} run={run} commitFirst={commitFirst} setCommitFirst={setCommitFirst} interrupts={interrupts} />
+
+        <section className="flex min-w-0 flex-col gap-3 lg:min-h-0">
+          <div className="rounded-lg border border-line bg-panel p-3">
+            <PaneTitle icon="Activity">Live gate</PaneTitle>
+            <div className="mt-2"><Pipeline stage={stage} finalTier={last ? last.ev.final : null} /></div>
+            <div className="mt-3"><Verdict last={last} /></div>
+          </div>
+          {banner && (
+            <div role="alert" className="flex items-start gap-2 rounded-lg border border-orange-400/60 bg-orange-500/10 p-3 text-sm font-semibold text-orange-200 glow-a">
+              <Ico name="Siren" size={18} className="mt-0.5 shrink-0" /><span>{banner}</span>
+            </div>
+          )}
+          <Terminal lines={lines} busy={busy} />
+          <Digest items={digest} approve={approveDigest} decline={declineDigest} />
+        </section>
+
+        <section className="flex min-w-0 flex-col gap-3 lg:min-h-0">
+          <Metrics m={m} />
+          <Ledger rows={ledger} revoke={revoke} />
+        </section>
+      </main>
+
+      <footer className="text-center text-[11px] text-slate-500">Prototype with simulated data · Flipkart APM ’29 submission · Bhagavath M S</footer>
+
+      {modal && <ConsentModal key={modal.id} ctx={modal} commitFirst={commitFirst} savedMax={savedMax} setSavedMax={setSavedMax} onRubber={onRubber} onResolve={resolve} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>

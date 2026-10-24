@@ -1,0 +1,13 @@
+# Files to exclude from Git tracking
+Archtecture.png
+main.tex
+Problem Statement.pdf
+
+# Optional: Common LaTeX temporary build files
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
